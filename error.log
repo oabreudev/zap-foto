@@ -1,0 +1,6 @@
+auth_info_baileys/
+combined.log
+error.log
+*.log
+dist/
+.env" > .gitignore
