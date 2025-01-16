@@ -5,17 +5,19 @@ import cors from 'cors';
 import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
 import winston from 'winston';
+import qrcode from 'qrcode-terminal';
 
 const app = express();
 const port = process.env.PORT || 4000;
-app.use(cors());
 
-// Logger configuration
+// Logger configuration with better formatting
 const logger = winston.createLogger({
     level: 'info',
     format: winston.format.combine(
         winston.format.timestamp(),
-        winston.format.json()
+        winston.format.printf(({ timestamp, level, message }) => {
+            return `${timestamp} [${level.toUpperCase()}]: ${message}`;
+        })
     ),
     transports: [
         new winston.transports.File({ filename: 'error.log', level: 'error' }),
@@ -25,11 +27,15 @@ const logger = winston.createLogger({
 
 if (process.env.NODE_ENV !== 'production') {
     logger.add(new winston.transports.Console({
-        format: winston.format.simple(),
+        format: winston.format.combine(
+            winston.format.colorize(),
+            winston.format.simple()
+        ),
     }));
 }
 
 let sock: ReturnType<typeof makeWASocket>;
+let qrDisplayed = false;
 
 async function connectToWhatsApp() {
     try {
@@ -41,29 +47,55 @@ async function connectToWhatsApp() {
         sock = makeWASocket({
             version,
             auth: state,
-            printQRInTerminal: true,
+            printQRInTerminal: false, // We'll handle QR display ourselves
+            logger: logger,
         });
 
         sock.ev.on('connection.update', (update) => {
-            const { connection, lastDisconnect } = update;
+            const { connection, lastDisconnect, qr } = update;
+            
+            if (qr && !qrDisplayed) {
+                qrDisplayed = true;
+                console.clear(); // Clear console for better visibility
+                logger.info('='.repeat(50));
+                logger.info('Scan this QR code in WhatsApp:');
+                logger.info('='.repeat(50));
+                
+                // Generate QR with better visibility settings
+                qrcode.generate(qr, {
+                    small: false,
+                    scale: 8
+                });
+                
+                logger.info('='.repeat(50));
+                logger.info('Waiting for QR code scan...');
+            }
+
             if (connection === 'close') {
+                qrDisplayed = false;
                 const shouldReconnect = (lastDisconnect?.error as Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
-                logger.info('connection closed due to ', lastDisconnect?.error, ', reconnecting ', shouldReconnect);
+                logger.info(`Connection closed due to ${(lastDisconnect?.error as Error)?.message || 'unknown reason'}`);
+                logger.info(`Reconnecting: ${shouldReconnect}`);
+                
                 if (shouldReconnect) {
-                    connectToWhatsApp();
+                    setTimeout(connectToWhatsApp, 3000);
                 }
             } else if (connection === 'open') {
+                qrDisplayed = false;
+                logger.info('='.repeat(50));
                 logger.info('Successfully connected to WhatsApp!');
+                logger.info('='.repeat(50));
             }
         });
 
         sock.ev.on('creds.update', saveCreds);
     } catch (error) {
         logger.error('Error connecting to WhatsApp:', error);
-        setTimeout(connectToWhatsApp, 5000); // Try to reconnect after 5 seconds
+        setTimeout(connectToWhatsApp, 5000);
     }
 }
 
+// Start the connection process
 connectToWhatsApp();
 
 // Middlewares
@@ -79,36 +111,6 @@ const limiter = rateLimit({
 app.use(limiter);
 
 // Route to send message
-app.post('/enviar-mensagem', async (req: Request, res: Response) => {
-    const { phone, name } = req.body;
-
-    if (!phone || !name) {
-        return res.status(400).json({ error: 'Phone and name are required' });
-    }
-
-    if (!sock) {
-        logger.error('WhatsApp is not connected');
-        return res.status(500).json({ error: 'WhatsApp is not connected' });
-    }
-
-    try {
-        const [result] = await sock.onWhatsApp(phone);
-        if (result?.exists) {
-            const message = `Olá, ${name}! Agradecemos por confirmar sua presença no nosso chá de bebê! Estamos muito animados para celebrar esse momento especial com você. Se puder, seria maravilhoso se a mulher trouxesse um presente de sua escolha, e, se o homem puder trazer um pacote de fraldas (M, G ou GG), será muito bem-vindo. Mas, acima de tudo, sua presença é o que mais importa! Nos vemos em breve!`;
-
-            await sock.sendMessage(result.jid, { text: message });
-
-            logger.info(`Message sent successfully to ${phone}`);
-            return res.json({ success: true, message: 'Message sent successfully!' });
-        } else {
-            logger.warn(`Number not found on WhatsApp: ${phone}`);
-            return res.status(404).json({ error: 'Number not found on WhatsApp' });
-        }
-    } catch (error) {
-        logger.error('Error sending message:', error);
-        return res.status(500).json({ error: 'Error sending message' });
-    }
-});
 
 // Route to fetch profile picture
 app.get('/buscar-foto/:phone', async (req: Request, res: Response) => {
