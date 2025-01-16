@@ -1,8 +1,0 @@
-tunnels:
-  frontend:
-    addr: 3000      # Porta onde seu frontend está rodando
-    proto: http     # Protocolo para o frontend
-
-  api:
-    addr: 4000      # Porta onde sua API de mensagens está rodando
-    proto: tcp      # Protocolo para a API (caso seja TCP)
